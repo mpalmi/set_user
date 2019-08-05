@@ -8,7 +8,7 @@
  *
  * This code is released under the PostgreSQL license.
  *
- * Copyright 2015-2018 Crunchy Data Solutions, Inc.
+ * Copyright 2015-2019 Crunchy Data Solutions, Inc.
  *
  * Permission to use, copy, modify, and distribute this software and its
  * documentation for any purpose, without fee, and without a written
@@ -237,6 +237,53 @@ check_user_whitelist(Oid userId, const char *whitelist)
 	return result;
 }
 
+static void
+reset_user(bool is_token)
+{
+	char	   *user_supplied_token = NULL;
+
+	/* set_user not active, nothing to do */
+	if (save_OldUserId == InvalidOid)
+		PG_RETURN_TEXT_P(cstring_to_text("OK"));
+
+	if (reset_token && !is_token)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("reset token required but not provided")));
+	else if (reset_token && is_token)
+		user_supplied_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
+
+	if (reset_token)
+	{
+		if (strcmp(reset_token, user_supplied_token) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					errmsg("incorrect reset token provided")));
+	}
+
+	/* get original userid to whom we will reset */
+	NewUserId = save_OldUserId;
+	newuser = GETUSERNAMEFROMID(NewUserId);
+	NewUser_is_superuser = superuser_arg(NewUserId);
+
+	/* flag that we are now reset */
+	save_OldUserId = InvalidOid;
+
+	/* restore original log_statement setting if block_log_statement is true */
+	if (Block_LS)
+		SetConfigOption("log_statement", save_log_statement, PGC_SUSET, PGC_S_SESSION);
+
+	pfree(save_log_statement);
+	save_log_statement = NULL;
+
+	if (reset_token)
+	{
+		pfree(reset_token);
+		reset_token = NULL;
+	}
+}
+
+
 PG_FUNCTION_INFO_V1(set_user);
 Datum
 set_user(PG_FUNCTION_ARGS)
@@ -418,47 +465,7 @@ set_user(PG_FUNCTION_ARGS)
 	}
 	else if (is_reset)
 	{
-		char	   *user_supplied_token = NULL;
-
-		/* set_user not active, nothing to do */
-		if (save_OldUserId == InvalidOid)
-			PG_RETURN_TEXT_P(cstring_to_text("OK"));
-
-		if (reset_token && !is_token)
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("reset token required but not provided")));
-		else if (reset_token && is_token)
-			user_supplied_token = text_to_cstring(PG_GETARG_TEXT_PP(0));
-
-		if (reset_token)
-		{
-			if (strcmp(reset_token, user_supplied_token) != 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						errmsg("incorrect reset token provided")));
-		}
-
-		/* get original userid to whom we will reset */
-		NewUserId = save_OldUserId;
-		newuser = GETUSERNAMEFROMID(NewUserId);
-		NewUser_is_superuser = superuser_arg(NewUserId);
-
-		/* flag that we are now reset */
-		save_OldUserId = InvalidOid;
-
-		/* restore original log_statement setting if block_log_statement is true */
-		if (Block_LS)
-			SetConfigOption("log_statement", save_log_statement, PGC_SUSET, PGC_S_SESSION);
-
-		pfree(save_log_statement);
-		save_log_statement = NULL;
-
-		if (reset_token)
-		{
-			pfree(reset_token);
-			reset_token = NULL;
-		}
+		reset_user(is_token);
 	}
 	else
 		/* should not happen */
@@ -471,7 +478,17 @@ set_user(PG_FUNCTION_ARGS)
 			  newuser);
 
 	SetCurrentRoleId(NewUserId, NewUser_is_superuser);
-	PostSetUserHook(is_reset, newuser);
+
+	PG_TRY();
+	{
+		PostSetUserHook(is_reset, newuser);
+	}
+	PG_CATCH();
+	{
+		reset_user(is_token);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	PG_RETURN_TEXT_P(cstring_to_text("OK"));
 }
