@@ -49,9 +49,10 @@
 PG_MODULE_MAGIC;
 
 #include "compatibility.h"
+#include "deprecated_gucs.h"
 
-#define ALLOWLIST_WILDCARD	"*"
 #define SUPERUSER_AUDIT_TAG	"AUDIT"
+#define ALLOWLIST_WILDCARD	"*"
 
 static char *save_log_statement = NULL;
 static Oid save_OldUserId = InvalidOid;
@@ -61,8 +62,6 @@ static ProcessUtility_hook_type prev_hook = NULL;
 static bool Block_AS = false;
 static bool Block_CP = false;
 static bool Block_LS = false;
-static char *SU_Allowlist = NULL;
-static char *NOSU_TargetAllowlist = NULL;
 static char *SU_AuditTag = NULL;
 
 static void PostSetUserHook(bool is_reset, const char *newuser);
@@ -70,9 +69,6 @@ static void PostSetUserHook(bool is_reset, const char *newuser);
 extern Datum set_user(PG_FUNCTION_ARGS);
 void _PG_init(void);
 void _PG_fini(void);
-
-DEPRECATED_VARIABLE_NAME(superuser_whitelist, superuser_allowlist, SU_Allowlist)
-DEPRECATED_VARIABLE_NAME(nosuperuser_target_whitelist, nosuperuser_target_allowlist, NOSU_TargetAllowlist)
 
 /*
  * check_user_allowlist
@@ -400,14 +396,6 @@ _PG_init(void)
 							 NULL, &Block_LS, true, PGC_SIGHUP,
 							 0, NULL, NULL, NULL);
 
-	DEFINE_DEPRECATED_GUC(nosuperuser_target_whitelist,
-				nosuperuser_target_allowlist,
-				NOSU_TargetAllowlist)
-
-	DEFINE_DEPRECATED_GUC(superuser_whitelist,
-				superuser_allowlist,
-				SU_Allowlist)
-
 	DefineCustomStringVariable("set_user.nosuperuser_target_allowlist",
 							 "List of roles that can be an argument to set_user",
 							 NULL, &NOSU_TargetAllowlist, ALLOWLIST_WILDCARD, PGC_SIGHUP,
@@ -423,6 +411,21 @@ _PG_init(void)
 							 NULL, &SU_AuditTag, SUPERUSER_AUDIT_TAG, PGC_SIGHUP,
 							 0, NULL, NULL, NULL);
 	
+
+	/* Deprecated GUCs */
+	DefineCustomStringVariable("set_user.nosuperuser_target_whitelist",
+							 "Deprecated: use set_user.nosuperuser_target_whitelist",
+							 NULL, &NOSU_TargetWhitelist, NOSU_TargetAllowlist, PGC_SIGHUP, GUC_NO_SHOW_ALL,
+							 NULL,
+							 assign_nosuperuser_target_whitelist,
+							 show_nosuperuser_target_whitelist);
+
+	DefineCustomStringVariable("set_user.superuser_whitelist",
+							 "Deprecated: use set_user.superuser_allowlist",
+							 NULL, &SU_Whitelist, SU_Allowlist, PGC_SIGHUP, GUC_NO_SHOW_ALL,
+							 NULL,
+							 assign_superuser_whitelist,
+							 show_superuser_whitelist);
 
 	/* Install hook */
 	prev_hook = ProcessUtility_hook;
