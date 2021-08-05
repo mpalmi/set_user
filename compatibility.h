@@ -23,10 +23,6 @@
  *
  * Introduces ReadOnlyTree boolean
  */
-static void PU_hook(PlannedStmt *pstmt, const char *queryString, bool ReadOnlyTree,
-					ProcessUtilityContext context, ParamListInfo params,
-					QueryEnvironment *queryEnv,
-					DestReceiver *dest, QueryCompletion *qc);
 #define _PU_HOOK \
 	static void PU_hook(PlannedStmt *pstmt, const char *queryString, bool ReadOnlyTree, \
 						ProcessUtilityContext context, ParamListInfo params, \
@@ -48,10 +44,6 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString, bool ReadOnlyTr
  * Introduces QueryCompletion struct
  */
 #ifndef _PU_HOOK
-static void PU_hook(PlannedStmt *pstmt, const char *queryString,
-					ProcessUtilityContext context, ParamListInfo params,
-					QueryEnvironment *queryEnv,
-					DestReceiver *dest, QueryCompletion *qc);
 #define _PU_HOOK \
 	static void PU_hook(PlannedStmt *pstmt, const char *queryString, \
 						ProcessUtilityContext context, ParamListInfo params, \
@@ -89,10 +81,7 @@ _heap_tuple_get_oid(HeapTuple roleTup)
  * - Introduces varlena.h
  */
 #if PG_VERSION_NUM >= 100000
-# ifndef _PU_HOOK
-static void PU_hook(PlannedStmt *pstmt, const char *queryString,
-					ProcessUtilityContext context, ParamListInfo params,
-					QueryEnvironment *queryEnv, DestReceiver *dest, char *completionTag);
+#ifndef _PU_HOOK
 #define _PU_HOOK \
 	static void PU_hook(PlannedStmt *pstmt, const char *queryString, \
 						ProcessUtilityContext context, ParamListInfo params, \
@@ -105,7 +94,7 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 #define _standard_ProcessUtility \
 	standard_ProcessUtility(pstmt, queryString, context, params, queryEnv, dest, completionTag)
 
-# endif
+#endif
 
 #include "utils/varlena.h"
 #define parsetree ((Node *) pstmt->utilityStmt)
@@ -127,7 +116,7 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString,
  * Lowest supported version.
  */
 #if PG_VERSION_NUM >= 90400
-# ifndef _PU_HOOK
+#ifndef _PU_HOOK
 static void PU_hook(Node *parsetree, const char *queryString,
 					ProcessUtilityContext context, ParamListInfo params,
 					DestReceiver *dest, char *completionTag);
@@ -142,11 +131,11 @@ static void PU_hook(Node *parsetree, const char *queryString,
 
 #define _standard_ProcessUtility \
 	standard_ProcessUtility(parsetree, queryString, context, params, dest, completionTag)
-# endif
+#endif
 
-# ifndef GETUSERNAMEFROMID
+#ifndef GETUSERNAMEFROMID
 #define GETUSERNAMEFROMID(ouserid) GetUserNameFromId(ouserid)
-# endif
+#endif
 
 # ifndef HEAP_TUPLE_GET_OID
 static inline Oid
@@ -160,5 +149,8 @@ _heap_tuple_get_oid(HeapTuple roleTup)
 #if !defined(PG_VERSION_NUM) || PG_VERSION_NUM < 90400
 #error "This extension only builds with PostgreSQL 9.4 or later"
 #endif
+
+/* Use our version-specific static declaration here */
+_PU_HOOK;
 
 #endif	/* SET_USER_COMPAT_H */
