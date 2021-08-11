@@ -52,6 +52,7 @@ PG_MODULE_MAGIC;
 #define SUPERUSER_AUDIT_TAG	"AUDIT"
 
 static char *save_log_statement = NULL;
+static char *save_log_line_prefix = NULL;
 static Oid save_OldUserId = InvalidOid;
 static char *reset_token = NULL;
 static ProcessUtility_hook_type prev_hook = NULL;
@@ -298,15 +299,16 @@ set_user(PG_FUNCTION_ARGS)
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 		save_log_statement = pstrdup(GetConfigOption("log_statement",
 													 false, false));
+		save_log_line_prefix = pstrdup(GetConfigOption("log_line_prefix",
+													 false, false));
 		MemoryContextSwitchTo(oldcontext);
 
 		if (NewUser_is_superuser && Block_LS)
 		{
-			const char	   *old_log_prefix = GetConfigOption("log_line_prefix", true, false);
 			char		   *new_log_prefix = NULL;
 
 			if (old_log_prefix)
-				new_log_prefix = psprintf("%s%s: ", old_log_prefix, SU_AuditTag);
+				new_log_prefix = psprintf("%s%s: ", save_log_line_prefix, SU_AuditTag);
 			else
 				new_log_prefix = pstrdup(SU_AuditTag);
 
@@ -357,12 +359,18 @@ set_user(PG_FUNCTION_ARGS)
 		/* flag that we are now reset */
 		save_OldUserId = InvalidOid;
 
-		/* restore original log_statement setting if block_log_statement is true */
+		/* restore original log_statement and log_line_prefix settings if block_log_statement is true */
 		if (Block_LS)
+		{
 			SetConfigOption("log_statement", save_log_statement, PGC_SUSET, PGC_S_SESSION);
+			SetConfigOption("log_line_prefix", save_log_line_prefix, PGC_SUSET, PGC_S_SESSION);
+		}
 
 		pfree(save_log_statement);
 		save_log_statement = NULL;
+
+		pfree(save_log_line_prefix);
+		save_log_line_prefix = NULL;
 
 		if (reset_token)
 		{
