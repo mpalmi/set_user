@@ -27,6 +27,8 @@
  */
 #include "postgres.h"
 
+#include <limits.h>
+
 #include "pg_config.h"
 
 #include "access/htup_details.h"
@@ -52,7 +54,8 @@ PG_MODULE_MAGIC;
 #define SUPERUSER_AUDIT_TAG	"AUDIT"
 
 static char *save_log_statement = NULL;
-static Oid save_OldUserId = InvalidOid;
+static char *save_log_line_prefix = NULL;
+static int save_OldUserId = (int) InvalidOid;
 static char *reset_token = NULL;
 static ProcessUtility_hook_type prev_hook = NULL;
 
@@ -167,10 +170,10 @@ set_user(PG_FUNCTION_ARGS)
 	bool			NewUser_is_superuser = false;
 	char		   *su = "Superuser ";
 	char		   *nsu = "";
-	MemoryContext	oldcontext;
 	bool			is_reset = false;
 	bool			is_token = false;
 	bool			is_privileged = false;
+	char		   *result = (char *) palloc(12); /* sign, 10 digits, '\0' */
 
 	/*
 	 * Disallow SET ROLE inside a transaction block. The
@@ -237,7 +240,7 @@ set_user(PG_FUNCTION_ARGS)
 	if ((nargs == 1 && !is_reset) || nargs == 2)
 	{
 		/* we are setting a new user */
-		if (save_OldUserId != InvalidOid)
+		if (save_OldUserId != (int) InvalidOid)
 			elog(ERROR, "must reset previous user prior to setting again");
 
 		newuser = text_to_cstring(PG_GETARG_TEXT_PP(0));
@@ -245,9 +248,6 @@ set_user(PG_FUNCTION_ARGS)
 		/* with 2 args, the caller wants to specify a reset token */
 		if (nargs == 2)
 		{
-			/* use session lifetime memory */
-			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
 			/* this should never be NULL but just in case */
 			if (PG_ARGISNULL(1))
 			{
@@ -257,8 +257,9 @@ set_user(PG_FUNCTION_ARGS)
 			}
 
 			/*capture the reset token */
-			reset_token = text_to_cstring(PG_GETARG_TEXT_PP(1));
-			MemoryContextSwitchTo(oldcontext);
+			SetConfigOption("set_user_internal.reset_token",
+							text_to_cstring(PG_GETARG_TEXT_PP(1)),
+							PGC_INTERNAL, PGC_S_SESSION);
 		}
 
 		/* Look up the username */
@@ -293,20 +294,26 @@ set_user(PG_FUNCTION_ARGS)
 					 errhint("Add target role to set_user.nosuperuser_target_allowlist.")));
 		}
 
-		/* keep track of original userid and value of log_statement */
-		save_OldUserId = OldUserId;
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		save_log_statement = pstrdup(GetConfigOption("log_statement",
-													 false, false));
-		MemoryContextSwitchTo(oldcontext);
+		/* keep track of original userid */
+		pg_ltoa((int) OldUserId, result);
+		SetConfigOption("set_user_internal.save_OldUserId",
+						 result,
+						 PGC_INTERNAL, PGC_S_SESSION);
 
 		if (NewUser_is_superuser && Block_LS)
 		{
-			const char	   *old_log_prefix = GetConfigOption("log_line_prefix", true, false);
 			char		   *new_log_prefix = NULL;
 
-			if (old_log_prefix)
-				new_log_prefix = psprintf("%s%s: ", old_log_prefix, SU_AuditTag);
+			SetConfigOption("set_user_internal.save_log_statement",
+							 GetConfigOption("log_statement", false, false),
+							 PGC_INTERNAL, PGC_S_SESSION);
+
+			SetConfigOption("set_user_internal.save_log_line_prefix",
+							 GetConfigOption("log_line_prefix", false, false),
+							 PGC_INTERNAL, PGC_S_SESSION);
+
+			if (save_log_line_prefix)
+				new_log_prefix = psprintf("%s%s: ", save_log_line_prefix, SU_AuditTag);
 			else
 				new_log_prefix = pstrdup(SU_AuditTag);
 
@@ -323,7 +330,7 @@ set_user(PG_FUNCTION_ARGS)
 			 * 'log_line_prefix' so log statements are tagged for easy
 			 * filtering.
 			 */
-			SetConfigOption("log_line_prefix", new_log_prefix, PGC_POSTMASTER, PGC_S_SESSION);
+			SetConfigOption("log_line_prefix", new_log_prefix, PGC_SIGHUP, PGC_S_SESSION);
 		}
 	}
 	else if (is_reset)
@@ -331,7 +338,7 @@ set_user(PG_FUNCTION_ARGS)
 		char	   *user_supplied_token = NULL;
 
 		/* set_user not active, nothing to do */
-		if (save_OldUserId == InvalidOid)
+		if (save_OldUserId == (int) InvalidOid)
 			PG_RETURN_TEXT_P(cstring_to_text("OK"));
 
 		if (reset_token && !is_token)
@@ -355,19 +362,29 @@ set_user(PG_FUNCTION_ARGS)
 		NewUser_is_superuser = superuser_arg(NewUserId);
 
 		/* flag that we are now reset */
-		save_OldUserId = InvalidOid;
+		pg_ltoa((int) InvalidOid, result);
+		SetConfigOption("set_user_internal.save_OldUserId",
+						 result,
+						 PGC_INTERNAL, PGC_S_SESSION);
 
-		/* restore original log_statement setting if block_log_statement is true */
-		if (Block_LS)
+		if (OldUser_is_superuser && Block_LS)
+		{
+			/* restore original log_statement & log_line_prefix */
 			SetConfigOption("log_statement", save_log_statement, PGC_SUSET, PGC_S_SESSION);
+			SetConfigOption("log_line_prefix", save_log_line_prefix, PGC_SIGHUP, PGC_S_SESSION);
 
-		pfree(save_log_statement);
-		save_log_statement = NULL;
+			/* reset saved internal GUCs */
+			SetConfigOption("set_user_internal.save_log_statement",
+							 NULL, PGC_INTERNAL, PGC_S_SESSION);
+			SetConfigOption("set_user_internal.save_log_line_prefix",
+							 NULL, PGC_INTERNAL, PGC_S_SESSION);
+		}
 
 		if (reset_token)
 		{
-			pfree(reset_token);
-			reset_token = NULL;
+			SetConfigOption("set_user_internal.reset_token",
+							NULL,
+							PGC_INTERNAL, PGC_S_SESSION);
 		}
 	}
 	else
@@ -386,9 +403,49 @@ set_user(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text("OK"));
 }
 
+/*
+ * Entrypoint of this module.
+ */
 void
 _PG_init(void)
 {
+	/* Be sure we do initialization only once */
+	static bool inited = false;
+
+	if (inited)
+		return;
+
+	/* Must be loaded with shared_preload_libraries */
+	if (!process_shared_preload_libraries_in_progress)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						errmsg("pgnodemx: must be loaded via shared_preload_libraries")));
+
+	/* Not for general use --- used to maintain internal state */
+	DefineCustomStringVariable("set_user_internal.save_log_statement",
+							   "Original session value of log_statement",
+							   NULL, &save_log_statement, NULL, PGC_INTERNAL,
+							   GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE,
+							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("set_user_internal.save_log_line_prefix",
+							   "Original session value of log_line_prefix",
+							   NULL, &save_log_line_prefix, NULL, PGC_INTERNAL,
+							   GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE,
+							   NULL, NULL, NULL);
+
+	DefineCustomStringVariable("set_user_internal.reset_token",
+							   "Original session value of reset_token",
+							   NULL, &reset_token, NULL, PGC_INTERNAL,
+							   GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE,
+							   NULL, NULL, NULL);
+
+	DefineCustomIntVariable("set_user_internal.save_OldUserId",
+							"Original session UserId",
+							NULL, &save_OldUserId, (int) InvalidOid, INT_MIN, INT_MAX, PGC_INTERNAL,
+							GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE,
+							NULL, NULL, NULL);
+
+	/* General use */
 	DefineCustomBoolVariable("set_user.block_alter_system",
 							 "Block ALTER SYSTEM commands",
 							 NULL, &Block_AS, true, PGC_SIGHUP,
@@ -430,6 +487,8 @@ _PG_init(void)
 	/* Install hook */
 	prev_hook = ProcessUtility_hook;
 	ProcessUtility_hook = PU_hook;
+
+    inited = true;
 }
 
 void
@@ -447,7 +506,7 @@ _PG_fini(void)
 _PU_HOOK
 {
 	/* if set_user has been used to transition, enforce set_user GUCs */
-	if (save_OldUserId != InvalidOid)
+	if (save_OldUserId != (int) InvalidOid)
 	{
 		switch (nodeTag(parsetree))
 		{
