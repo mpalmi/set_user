@@ -19,6 +19,9 @@ jobs:
     strategy:
       matrix:
         pgver: [9.4, 9.5, 9.6, 10, 11, 12, 13, 14]
+        include:
+          - pgver: latest
+            devpkg: 14
 
     steps:
       - name: Checkout set_user repo
